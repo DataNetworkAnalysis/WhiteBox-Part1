@@ -21,7 +21,13 @@ python main.py --train --target=['mnist','cifar10']
 
 **Model Selectivity Evaluation**
 ```
-python main.py --eval --target=['mnist','cifar10'] --method=['VGB','IB','IG','GB','GC','GB-GC','DeconvNet']
+python main.py --eval=selectivity --target=['mnist','cifar10'] --method=['VGB','IB','DeconvNet','IG','GB','GC','GBGC']
+```
+
+**Model ROAR & KAR Evaluation**  
+For ROAR and KAR, the saliency map of each attribution methods that you want to evaluate must be saved prior to the evaluation.
+```
+python main.py --eval=['ROAR','KAR'] --target=['mnist','cifar10'] --method=['VGB','IB','DeconvNet','IG','GB','GC','GBGC']
 ```
 
 # Dataset
@@ -30,13 +36,13 @@ python main.py --eval --target=['mnist','cifar10'] --method=['VGB','IB','IG','GB
 
 # Saliency Maps
 **Attribution Methods**
-- [Vanilla Backpropagation (VBP)](https://github.com/bllfpc/WhiteBox-Part1/blob/master/notebook/%5BAttribution%5D%20-%20Vanilla%20Backpropagation%20%26%20SmoothGrad.ipynb)
-- Input x Backpropagation (IB)
-- [DeconvNet](https://github.com/bllfpc/WhiteBox-Part1/blob/master/notebook/%5BAttribution%5D%20-%20DeconvNet%20%26%20SmoothGrad.ipynb) [1]
-- [Guided Backpropagation (GB)](https://github.com/bllfpc/WhiteBox-Part1/blob/master/notebook/%5BAttribution%5D%20-%20Guided%20Backpropagation%20%26%20Guided%20GradCam%20%26%20SmoothGrad.ipynb) [2]
-- [Integrated Gradients (IG)](https://github.com/bllfpc/WhiteBox-Part1/blob/master/notebook/%5BAttribution%5D%20-%20Integrated%20Gradients%20%26%20SmoothGrad.ipynb) [3]
-- [Grad-CAM (GC)](https://github.com/bllfpc/WhiteBox-Part1/blob/master/notebook/%5BAttribution%5D%20-%20GradCAM%20%26%20SmoothGrad.ipynb) [4]
-- [Guided Grad-CAM (GB-GC)](https://github.com/bllfpc/WhiteBox-Part1/blob/master/notebook/%5BAttribution%5D%20-%20Guided%20Backpropagation%20%26%20Guided%20GradCam%20%26%20SmoothGrad.ipynb) [4]
+- Vanilla Backpropagation (VBP) [[Notebook](https://github.com/bllfpc/WhiteBox-Part1/blob/master/notebook/%5BAttribution%5D%20-%20Vanilla%20Backpropagation%20%26%20Ensemble.ipynb)]
+- Input x Backpropagation (IB) [[Notebook](https://github.com/bllfpc/WhiteBox-Part1/blob/master/notebook/%5BAttribution%5D%20-%20Input%20x%20Backpropagation%20%26%20Ensemble.ipynb)]
+- DeconvNet [1] [[Notebook](https://github.com/bllfpc/WhiteBox-Part1/blob/master/notebook/%5BAttribution%5D%20-%20DeconvNet%20%26%20Ensemble.ipynb)]
+- Integrated Gradients (IG) [3] [[Notebook](https://github.com/bllfpc/WhiteBox-Part1/blob/master/notebook/%5BAttribution%5D%20-%20Integrated%20Gradients%20%26%20Ensemble.ipynb)]
+- Guided Backpropagation (GB) [2] [[Notebook](https://github.com/bllfpc/WhiteBox-Part1/blob/master/notebook/%5BAttribution%5D%20-%20Guided%20Backpropagation%20%26%20Ensemble.ipynb)]
+- Grad-CAM (GC) [4] [[Notebook](https://github.com/bllfpc/WhiteBox-Part1/blob/master/notebook/%5BAttribution%5D%20-%20GradCAM%20%26%20Ensemble.ipynb)]
+- Guided Grad-CAM (GB-GC) [4] [[Notebook](https://github.com/bllfpc/WhiteBox-Part1/blob/master/notebook/%5BAttribution%5D%20-%20Guided-GradCAM%20%26%20Ensemble.ipynb)]
 
 **Ensemble Methods**
 - SmoothGrad (SG) [5]
@@ -46,30 +52,59 @@ python main.py --eval --target=['mnist','cifar10'] --method=['VGB','IB','IG','GB
 # Evaluation Methods
 - Coherence
 - Selectivity
-- ROAR [6]
-- KAR [6]
+- Remove and Retrain (ROAR) [6]
+- Keep and Retrain (KAR) [6]
 
 # Experiments
 ## Model Architecture & Performance
+[[Notebook](https://github.com/bllfpc/WhiteBox-Part1/blob/master/notebook/%5BEvaluation%5D%20-%20Model%20Performance.ipynb)]
 
 Architecture | MNIST | CIFAR-10
 ---|---|---
 <img src="https://github.com/bllfpc/WhiteBox/blob/master/images/models/simple_cnn_architecture.png" alt="simple_cnn_architecture" width="200"/> | ![](https://github.com/bllfpc/WhiteBox/blob/master/images/results/mnist_acc_loss_plot.png) | ![](https://github.com/bllfpc/WhiteBox/blob/master/images/results/cifar10_acc_loss_plot.png)
 
-# Results
-## Coherence
+# Evaluation Results
+## Coherence 
+[[Notebook](https://github.com/bllfpc/WhiteBox-Part1/blob/master/notebook/%5BEvaluation%5D%20-%20Coherence.ipynb)]
+
+Coherence is a qualitative evaluation method that shows the importance of images. Attributions should fall on discriminative features (e.g. the object of interest).
+
 **MNIST**  
-![](https://github.com/bllfpc/WhiteBox/blob/master/images/results/coherence_mnist.jpg)
+<p align="center">
+  <img src="https://github.com/bllfpc/WhiteBox/blob/master/images/results/coherence_mnist.jpg" alt="mnist_coherence" width="700"/>
+</p>
 
 **CIFAR-10**  
-![](https://github.com/bllfpc/WhiteBox/blob/master/images/results/coherence_cifar10.jpg)
+<p align="center">
+  <img src="https://github.com/bllfpc/WhiteBox/blob/master/images/results/coherence_cifar10.jpg" alt="cifar10_coherence" width="700"/>
+ </p>
 
 ## Selectivity
+[[Notebook](https://github.com/bllfpc/WhiteBox-Part1/blob/master/notebook/%5BEvaluation%5D%20-%20Selectivity.ipynb)]
+
+Selecticity is a method for quantitative evaluation of the attribution methods. The evaluation method is largely divided into two courses. First, the feature map for the image is created and the most influential part is deleted from the image. The second is to create the feature map again with the modified image and repeat the first process. 
+
+As a result, IB, GB and GB-GC were the most likely attribution methods to degrade the performance of models for the two datasets.
+
+<p align="center">
+  <img src="https://github.com/bllfpc/WhiteBox/blob/master/images/models/selectivity.PNG" alt="selectivity" width="400"/>
+</p>
+
 **MNIST**  
 ![](https://github.com/bllfpc/WhiteBox/blob/master/images/results/score_acc_change_mnist.jpg)
 
 **CIFAR-10**  
 ![](https://github.com/bllfpc/WhiteBox/blob/master/images/results/score_acc_change_cifar10.jpg)
+
+## ROAR/KAR
+ROAR/KAR is a method for quantitative evaluation of the attribution methods that how the performance of the classifier changes as features are removed based on the attribution method. 
+- ROAR : replace N% of pixels estimated to be *most* important [[Notebook](https://github.com/bllfpc/WhiteBox-Part1/blob/master/notebook/%5BEvaluation%5D%20-%20ROAR%26KAR.ipynb)]
+- KAR : replace N% of pixels estimated to be *least* important
+- Retrain Model and measure change in test accuracy
+
+<p align="center"><img src="https://github.com/bllfpc/WhiteBox/blob/master/images/results/ROAR_result.jpg" width="600" /></p>
+<p align="center"><img src="https://github.com/bllfpc/WhiteBox/blob/master/images/results/KAR_result.jpg" width="600" /></p>
+
 
 # Reference
 - [1] Zeiler, M. D., & Fergus, R. (2014, September). [Visualizing and understanding convolutional networks](https://arxiv.org/abs/1311.2901). In European conference on computer vision (pp. 818-833). Springer, Cham. ([Korean version](https://www.notion.so/tootouch/Visualizing-and-Understanding-Convolutional-Networks-4f396791212846439881575513271407))

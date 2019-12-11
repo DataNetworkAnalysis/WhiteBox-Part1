@@ -111,3 +111,18 @@ venv.bak/
 
 # dataset
 dataset/
+
+# vscode
+.vscode
+
+# ipynb
+practice.ipynb
+
+# saliency_maps
+saliency_maps/
+
+# ROAR&KAR checkpoint and log
+checkpoint/*ROAR*.pth
+logs/*ROAR*.txt
+checkpoint/*KAR*.pth
+logs/*KAR*.txt

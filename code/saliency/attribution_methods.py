@@ -1,119 +1,134 @@
 import torch 
 import torch.nn as nn
+from torch.autograd import Variable
+
 import numpy as np
+import h5py
+from tqdm import tqdm
+
+import cv2
+from PIL import Image
 
 from collections import OrderedDict
 from functools import partial
 
 from utils import rescale_image
-from PIL import Image
+from model import SimpleCNNDeconv
+
 
 
 class VanillaBackprop(object):
     def __init__(self, model):
         self.model = model 
-
         # evaluation mode
         self.model.eval()
-        # hook 
-        self.hook_layers()
 
-    def hook_layers(self):
-        def hook(module, grad_in, grad_out, key):
-            self.model.gradients[key] = grad_in[0]
-
-        for pos, module in enumerate(self.model._modules.get('features')):
-            module.register_backward_hook(partial(hook, key=pos))
-
-    def generate_image(self, pre_img, layer=0, target_class=None):
-        probs = self.model(pre_img)
-        prob = probs.max().item()
-        pred = probs.argmax().item()
+    def generate_image(self, pre_imgs, targets, **kwargs):
+        pre_imgs = Variable(pre_imgs, requires_grad=True)
+        outputs = self.model(pre_imgs)
 
         self.model.zero_grad()
 
-        if target_class is None:
-            target_class = pred
+        one_hot_output = torch.zeros_like(outputs).scatter(1, targets.unsqueeze(1), 1).detach()
+        outputs.backward(gradient=one_hot_output)
+        probs, preds = outputs.detach().max(1)
 
-        one_hot_output = torch.FloatTensor(1, probs.size()[-1])
-        one_hot_output[0][target_class] = 1
+        sal_maps = rescale_image(pre_imgs.grad.numpy())
 
-        probs.backward(gradient=one_hot_output)
+        return (sal_maps, probs.numpy(), preds.numpy())
+    
+    def save_saliency_map(self, dataloader, save_dir, **kwargs):
+        img_size = dataloader.dataset.data.shape[1:] 
+        dim = len(img_size)
+        if dim == 2:
+            img_size = img_size + (1,)
+        sal_maps = np.array([], dtype=np.float32).reshape((0,) + img_size)
+        probs = np.array([], dtype=np.float32)
+        preds = np.array([], dtype=np.uint8)
+        for img_b, target_b in tqdm(dataloader, desc='Vanilla Backprop'):
+            sal_map_b, prob_b, pred_b = self.generate_image(img_b, target_b, **kwargs)
+            sal_maps = np.vstack([sal_maps, sal_map_b])
+            probs = np.append(probs, prob_b)
+            preds = np.append(preds, pred_b)
 
-        output = self.model.gradients[layer].numpy()[0] # (nb_filter, W, H)
-        output = rescale_image(output)
-
-        return (output, prob, pred)
+        with h5py.File(save_dir, 'w') as hf:
+            hf.create_dataset('saliencys',data=sal_maps)
+            hf.create_dataset('probs',data=probs)
+            hf.create_dataset('preds',data=preds)
+            hf.close()
+        print('Save saliency maps')
 
 
 class IntegratedGradients(object):
     def __init__(self, model):
         self.model = model
-        self.gradients = None
-
+        # evaluation mode
         self.model.eval()
 
-        self.hook_layers()
-
-    def hook_layers(self):
-        def hook(module, grad_in, grad_out, key):
-            self.model.gradients[key] = grad_in[0]
-
-        for pos, module in enumerate(self.model._modules.get('features')):
-            module.register_backward_hook(partial(hook, key=pos))
-
-    def generate_images_on_linear_path(self, input_image, steps):
+    def generate_images_on_linear_path(self, input_images, steps):
         step_list = np.arange(steps+1)/steps
-        xbar_list = [input_image*step for step in step_list]
+        xbar_list = [input_images*step for step in step_list]
         return xbar_list 
 
-    def generate_gradients(self, pre_img, layer=0, target_class=None):
-        probs = self.model(pre_img)
-        prob = probs.max().item()
-        pred = probs.argmax().item()
-
+    def generate_gradients(self, pre_imgs, targets, **kwargs):
+        pre_imgs = Variable(pre_imgs, requires_grad=True)
+        outputs = self.model(pre_imgs)
+        
         self.model.zero_grad()
 
-        if target_class == None:
-            target_class = pred
-        one_hot_output = torch.FloatTensor(1, probs.size()[-1]).zero_()
-        one_hot_output[0][target_class] = 1
+        one_hot_output = torch.zeros_like(outputs).scatter(1, targets.unsqueeze(1), 1).detach()
+        outputs.backward(gradient=one_hot_output)
+        probs, preds = outputs.detach().max(1)
 
-        probs.backward(gradient=one_hot_output)
-        gradients_arr = self.model.gradients[layer].data.numpy()[0]
+        imgs = pre_imgs.grad.numpy()
 
-        return gradients_arr, prob, pred
+        return (imgs, probs.numpy(), preds.numpy())
 
-    def generate_image(self, pre_img, layer=0, target_class=None, steps=100):
-        xbar_list = self.generate_images_on_linear_path(pre_img, steps)
-        output = np.zeros(pre_img.size()[1:])
+    def generate_image(self, pre_imgs, targets, **kwargs):
+        # default
+        steps = 10 if 'steps' not in kwargs.keys() else kwargs['steps']
+
+        xbar_list = self.generate_images_on_linear_path(pre_imgs, steps)
+        sal_maps = np.zeros(pre_imgs.size())
 
         for xbar_image in xbar_list:
-            single_integrated_grad, prob, pred = self.generate_gradients(xbar_image, layer, target_class)
-            output = output + single_integrated_grad / steps
+            single_integrated_grad, probs, preds = self.generate_gradients(xbar_image, targets)
+            sal_maps = sal_maps + (single_integrated_grad/steps)
             
-        output = rescale_image(output)
+        sal_maps = rescale_image(sal_maps)
         
-        return output, prob, pred
+        return (sal_maps, probs, preds)
+
+    def save_saliency_map(self, dataloader, save_dir, **kwargs):
+        img_size = dataloader.dataset.data.shape[1:] 
+        dim = len(img_size)
+        if dim == 2:
+            img_size = img_size + (1,)
+        sal_maps = np.array([], dtype=np.float32).reshape((0,) + img_size)
+        probs = np.array([], dtype=np.float32)
+        preds = np.array([], dtype=np.uint8)
+        for img_b, target_b in tqdm(dataloader, desc='Vanilla Backprop'):
+            sal_map_b, prob_b, pred_b = self.generate_image(img_b, target_b, **kwargs)
+            sal_maps = np.vstack([sal_maps, sal_map_b])
+            probs = np.append(probs, prob_b)
+            preds = np.append(preds, pred_b)
+
+        with h5py.File(save_dir, 'w') as hf:
+            hf.create_dataset('saliencys',data=sal_maps)
+            hf.create_dataset('probs',data=probs)
+            hf.create_dataset('preds',data=preds)
+            hf.close()
+        print('Save saliency maps')
 
 
 class GuidedBackprop(object):
     def __init__(self, model):
-        self.model = model
-        self.gradients = None
-        self.forward_relu_outputs = []
-
+        self.model = model    
+        # evaluation mode
         self.model.eval()
+        # update relu
+        self.forward_relu_outputs = []
         self.update_relus()
-        self.hook_layers()
-
-    def hook_layers(self):
-        def hook(module, grad_in, grad_out, key):
-            self.model.gradients[key] = grad_in[0]
-
-        for pos, module in enumerate(self.model._modules.get('features')):
-            if not isinstance(module, nn.ReLU):
-                module.register_backward_hook(partial(hook, key=pos))
 
     def update_relus(self):
         def relu_backward_hook_function(module, grad_in, grad_out):
@@ -132,95 +147,139 @@ class GuidedBackprop(object):
                 module.register_backward_hook(relu_backward_hook_function)
                 module.register_forward_hook(relu_forward_hook_function)
 
-    def generate_image(self, pre_img, layer=0, target_class=None):
-        probs = self.model(pre_img)
-        prob = probs.max().item()
-        pred = probs.argmax().item()
+    def generate_image(self, pre_imgs, targets, **kwargs):
+        pre_imgs = Variable(pre_imgs, requires_grad=True)
+        outputs = self.model(pre_imgs)
 
         self.model.zero_grad()
+        
+        one_hot_output = torch.zeros_like(outputs).scatter(1, targets.unsqueeze(1), 1).detach()
+        outputs.backward(gradient=one_hot_output)
+        probs, preds = outputs.detach().max(1)
 
-        if target_class is None:
-            target_class = pred
-        one_hot_output = torch.FloatTensor(1, probs.size()[-1]).zero_()
-        one_hot_output[0][target_class] = 1
+        sal_maps = rescale_image(pre_imgs.grad.numpy())
 
-        probs.backward(gradient=one_hot_output)
+        return (sal_maps, probs.numpy(), preds.numpy())
 
-        output = self.model.gradients[layer].data.numpy()[0]
-        output = rescale_image(output)
+    def save_saliency_map(self, dataloader, save_dir, **kwargs):
+        img_size = dataloader.dataset.data.shape[1:] 
+        dim = len(img_size)
+        if dim == 2:
+            img_size = img_size + (1,)
+        sal_maps = np.array([], dtype=np.float32).reshape((0,) + img_size)
+        probs = np.array([], dtype=np.float32)
+        preds = np.array([], dtype=np.uint8)
+        for img_b, target_b in tqdm(dataloader, desc='Vanilla Backprop'):
+            sal_map_b, prob_b, pred_b = self.generate_image(img_b, target_b, **kwargs)
+            sal_maps = np.vstack([sal_maps, sal_map_b])
+            probs = np.append(probs, prob_b)
+            preds = np.append(preds, pred_b)
 
-        return (output, prob, pred)
-
-
-class CamExtractor(object):
-    def __init__(self, model, target_layer):
-        self.model = model
-        self.target_layer = target_layer
-        self.gradients = None
-
-    def save_gradient(self, grad):
-        self.gradients = grad
-
-    def forward_pass_on_convolutions(self, x):
-        conv_output = None
-        for module_pos, module in self.model.features._modules.items():
-            if isinstance(module, nn.MaxPool2d):
-                x, location = module(x)
-            else:
-                x = module(x)
-            if int(module_pos) == self.target_layer:
-                x.register_hook(self.save_gradient)
-                conv_output = x
-        return conv_output, x
-
-    def forward_pass(self, x):
-        conv_output, x = self.forward_pass_on_convolutions(x)
-        x = x.view(x.size(0), -1)
-        x = self.model.classifier(x)
-
-        return conv_output, x
+        with h5py.File(save_dir, 'w') as hf:
+            hf.create_dataset('saliencys',data=sal_maps)
+            hf.create_dataset('probs',data=probs)
+            hf.create_dataset('preds',data=preds)
+            hf.close()
+        print('Save saliency maps')
 
 class GradCAM(object):
     def __init__(self, model):
         self.model = model
+        # evaluation mode
         self.model.eval()
+        # hook
+        self.hook_layers()
+        # initial dicts
+        self.conv_outputs = OrderedDict()
+        self.gradients = OrderedDict()
+    
+    def hook_layers(self):
+        def hook_forward(module, input, output, key):
+            if isinstance(module, torch.nn.MaxPool2d):
+                self.conv_outputs[key] = output[0]
+            else:
+                self.conv_outputs[key] = output
 
-    def generate_image(self, pre_img, layer, target_class=None):
-        extractor = CamExtractor(self.model, layer)
-        conv_output, probs = extractor.forward_pass(pre_img)
+        def hook_backward(module, input, output, key):
+            self.gradients[key] = output[0]
 
-        prob = probs.max()
-        pred = probs.argmax()
+        for idx, layer in enumerate(self.model._modules.get('features')):
+            layer.register_forward_hook(partial(hook_forward, key=idx))
+            layer.register_backward_hook(partial(hook_backward, key=idx))
+            
+    def generate_image(self, pre_imgs, targets, **kwargs):
+        # default
+        layer = 8 if 'layer' not in kwargs.keys() else kwargs['layer']
+        color = False if 'color' not in kwargs.keys() else kwargs['color']
 
-        if target_class is None:
-            target_class = pred
-        one_hot_output = torch.FloatTensor(1, probs.size()[-1]).zero_()
-        one_hot_output[0][target_class] = 1
+        pre_imgs = Variable(pre_imgs, requires_grad=True)
+        outputs = self.model(pre_imgs)
 
-        self.model.features.zero_grad()
-        self.model.classifier.zero_grad()
+        self.model.zero_grad()
 
-        # gradients
-        probs.backward(gradient=one_hot_output, retain_graph=True)
-        guided_gradients = extractor.gradients.data.numpy()[0]
+        one_hot_output = torch.zeros_like(outputs).scatter(1, targets.unsqueeze(1), 1).detach()
+        outputs.backward(gradient=one_hot_output)
+        probs, preds = outputs.detach().max(1)
+
+        gradients = self.gradients[layer].numpy()
         
         # A = w * conv_output
-        target = conv_output.data.numpy()[0]
-        weights = np.mean(guided_gradients, axis=(1,2))
+        convs = self.conv_outputs[layer].detach().numpy()
+        weights = np.mean(gradients, axis=(2,3))
+        weights = weights.reshape(weights.shape + (1,1,))
 
-        output = np.zeros(target.shape[1:], dtype=np.float32)
-        for i, w in enumerate(weights):
-            output += w * target[i, :, :]
-        
+        gradcams = weights * convs
+        gradcams = gradcams.sum(axis=1)
+
+        # relu
+        gradcams = np.maximum(gradcams, 0)
+
         # minmax scaling * 255
-        output = np.maximum(output, 0)
-        output = (output - np.min(output)) / (np.max(output) - np.min(output))
-        output = np.uint8(output * 255)
+        mins = gradcams.min(axis=(1,2))
+        mins = mins.reshape(mins.shape + (1,1,))
+        maxs = gradcams.max(axis=(1,2))
+        maxs = maxs.reshape(maxs.shape + (1,1,))
+
+        gradcams = (gradcams - mins)/(maxs - mins)
+        gradcams = np.uint8(gradcams * 255)
     
         # resize to input image size
-        output = np.uint8(Image.fromarray(output).resize((pre_img.shape[2], pre_img.shape[3]), Image.ANTIALIAS))/255
+        def resize_image(gradcam, origin_image, color):
+            img = np.uint8(Image.fromarray(gradcam).resize((origin_image.shape[-2:]), Image.ANTIALIAS))/255
+            if color:
+                # output_GC (H,W) to (H,W,C)
+                img = cv2.applyColorMap(np.uint8(img*255), cv2.COLORMAP_JET)
+                img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+            else:
+                img = np.expand_dims(img, axis=2)
+            
+            return img
 
-        return (output, prob, pred)
+        colors = [color] * gradcams.shape[0]
+        gradcams = np.array(list(map(resize_image, gradcams, pre_imgs, colors)))
+
+        return (gradcams, probs.numpy(), preds.numpy())
+
+    def save_saliency_map(self, dataloader, save_dir, **kwargs):
+        img_size = dataloader.dataset.data.shape[1:] 
+        dim = len(img_size)
+        if dim == 2:
+            img_size = img_size + (1,)
+        sal_maps = np.array([], dtype=np.float32).reshape((0,) + img_size)
+        probs = np.array([], dtype=np.float32)
+        preds = np.array([], dtype=np.uint8)
+        for img_b, target_b in tqdm(dataloader, desc='Vanilla Backprop'):
+            sal_map_b, prob_b, pred_b = self.generate_image(img_b, target_b, **kwargs)
+            sal_maps = np.vstack([sal_maps, sal_map_b])
+            probs = np.append(probs, prob_b)
+            preds = np.append(preds, pred_b)
+
+        with h5py.File(save_dir, 'w') as hf:
+            hf.create_dataset('saliencys',data=sal_maps)
+            hf.create_dataset('probs',data=probs)
+            hf.create_dataset('preds',data=preds)
+            hf.close()
+        print('Save saliency maps')
 
 
 class DeconvNet(object):
@@ -244,80 +303,119 @@ class DeconvNet(object):
         for idx, layer in enumerate(self.model._modules.get('features')):
             layer.register_forward_hook(partial(hook, key=idx))
 
-    def generate_image(self, pre_img, layer, target_class=None, max_activation=False):
+    def generate_image(self, pre_imgs, targets, **kwargs):
+        # default
+        layer = 0 if 'layer' not in kwargs.keys() else kwargs['layer']
 
         # prediction
-        probs = self.model(pre_img).detach()
-        prob = probs.max().item()
-        pred = probs.argmax().item()
+        outputs = self.model(pre_imgs).detach()
+        probs, preds = outputs.max(1)
         
         # feature size
         num_feat = self.model.feature_maps[layer].shape[1]
         new_feat_map = self.model.feature_maps[layer].clone()
 
-        if max_activation:
-            # max feature
-            act_lst = []
-            for i in range(0, num_feat):
-                choose_map = new_feat_map[0, i, :, :]
-                activation = torch.max(choose_map)
-                act_lst.append(activation.item())
-
-            act_lst = np.array(act_lst)
-            mark = np.argmax(act_lst)
-
-            choose_map = new_feat_map[0, mark, :, :]
-            max_activation = torch.max(choose_map)
-
-            if mark == 0:
-                new_feat_map[:, 1:, :, :] = 0
-            else:
-                new_feat_map[:, :mark, :, :] = 0
-                if mark != num_feat - 1:
-                    new_feat_map[:, mark + 1:, :, :] = 0
-
-            choose_map = torch.where(choose_map == max_activation,
-                                    choose_map,
-                                    torch.zeros(choose_map.shape))
-
-            new_feat_map[0, mark, :, :] = choose_map
-
-            # output deconvnet
-            deconv_output = self.deconv_model(new_feat_map, layer, self.model.pool_locs)
-
-        else:
-            # output deconvnet
-            deconv_output = self.deconv_model(self.model.feature_maps[layer], layer, self.model.pool_locs)
+        # output deconvnet
+        deconv_outputs = self.deconv_model(self.model.feature_maps[layer], layer, self.model.pool_locs)
 
         # denormalization
-        output = deconv_output.data.numpy()[0]
-        output = rescale_image(output)
+        deconv_outputs = deconv_outputs.data.numpy()
+        deconv_outputs = rescale_image(deconv_outputs)
         
-        return (output, prob, pred)
+        return (deconv_outputs, probs.numpy(), preds.numpy())
+    
+    def save_saliency_map(self, dataloader, save_dir, **kwargs):
+        img_size = dataloader.dataset.data.shape[1:] 
+        dim = len(img_size)
+        if dim == 2:
+            img_size = img_size + (1,)
+        sal_maps = np.array([], dtype=np.float32).reshape((0,) + img_size)
+        probs = np.array([], dtype=np.float32)
+        preds = np.array([], dtype=np.uint8)
+        for img_b, target_b in tqdm(dataloader, desc='Vanilla Backprop'):
+            sal_map_b, prob_b, pred_b = self.generate_image(img_b, target_b, **kwargs)
+            sal_maps = np.vstack([sal_maps, sal_map_b])
+            probs = np.append(probs, prob_b)
+            preds = np.append(preds, pred_b)
 
+        with h5py.File(save_dir, 'w') as hf:
+            hf.create_dataset('saliencys',data=sal_maps)
+            hf.create_dataset('probs',data=probs)
+            hf.create_dataset('preds',data=preds)
+            hf.close()
+        print('Save saliency maps')
 
 class GuidedGradCAM(object):
     def __init__(self, model):
         self.GC_model = GradCAM(model)
         self.GB_model = GuidedBackprop(model)
 
-    def generate_image(self, pre_img, layer, target_class):
-        output_GC, prob, pred = self.GC_model.generate_image(pre_img, 8, target_class)
-        output_GB, _, _ = self.GB_model.generate_image(pre_img, layer, target_class)
-        output = np.multiply(output_GC, output_GB.transpose(2,0,1))
-        output = output.transpose(1,2,0)
+    def generate_image(self, pre_imgs, targets, **kwargs):
+        # default
+        layer = 8 if 'layer' not in kwargs.keys() else kwargs['layer']        
+        color = False if 'color' not in kwargs.keys() else kwargs['color']
 
-        return output, prob, pred
+        output_GC, probs, preds = self.GC_model.generate_image(pre_imgs, targets, layer=layer, color=color)
+        output_GB, _, _ = self.GB_model.generate_image(pre_imgs, targets)
+
+        sal_maps = np.multiply(output_GC, output_GB)
+        sal_maps = rescale_image(sal_maps.transpose(0,3,1,2))
+
+        return sal_maps, probs, preds
+
+    def save_saliency_map(self, dataloader, save_dir, **kwargs):
+        img_size = dataloader.dataset.data.shape[1:] 
+        dim = len(img_size)
+        if dim == 2:
+            img_size = img_size + (1,)
+        sal_maps = np.array([], dtype=np.float32).reshape((0,) + img_size)
+        probs = np.array([], dtype=np.float32)
+        preds = np.array([], dtype=np.uint8)
+        for img_b, target_b in tqdm(dataloader, desc='Vanilla Backprop'):
+            sal_map_b, prob_b, pred_b = self.generate_image(img_b, target_b, **kwargs)
+            sal_maps = np.vstack([sal_maps, sal_map_b])
+            probs = np.append(probs, prob_b)
+            preds = np.append(preds, pred_b)
+
+        with h5py.File(save_dir, 'w') as hf:
+            hf.create_dataset('saliencys',data=sal_maps)
+            hf.create_dataset('probs',data=probs)
+            hf.create_dataset('preds',data=preds)
+            hf.close()
+        print('Save saliency maps')
 
     
 class InputBackprop(object):
     def __init__(self, model):
         self.VBP_model = VanillaBackprop(model)
 
-    def generate_image(self, pre_img, layer, target_class):
-        output_VBP, prob, pred = self.VBP_model.generate_image(pre_img, layer, target_class)
-        input_img = pre_img.detach().numpy()
-        input_img = rescale_image(input_img.squeeze(0))
-        output = np.multiply(output_VBP, input_img)
+    def generate_image(self, pre_imgs, targets, **kwargs):
+        output_VBP, probs, preds = self.VBP_model.generate_image(pre_imgs, targets, **kwargs)
+        input_img = pre_imgs.detach().numpy()
+        input_img = rescale_image(input_img)
 
-        return output, prob, pred
+        sal_maps = np.multiply(output_VBP, input_img)
+        sal_maps = rescale_image(sal_maps.transpose(0,3,1,2))
+
+        return sal_maps, probs, preds
+
+    def save_saliency_map(self, dataloader, save_dir, **kwargs):
+        img_size = dataloader.dataset.data.shape[1:] 
+        dim = len(img_size)
+        if dim == 2:
+            img_size = img_size + (1,)
+        sal_maps = np.array([], dtype=np.float32).reshape((0,) + img_size)
+        probs = np.array([], dtype=np.float32)
+        preds = np.array([], dtype=np.uint8)
+        for img_b, target_b in tqdm(dataloader, desc='Vanilla Backprop'):
+            sal_map_b, prob_b, pred_b = self.generate_image(img_b, target_b, **kwargs)
+            sal_maps = np.vstack([sal_maps, sal_map_b])
+            probs = np.append(probs, prob_b)
+            preds = np.append(preds, pred_b)
+
+        with h5py.File(save_dir, 'w') as hf:
+            hf.create_dataset('saliencys',data=sal_maps)
+            hf.create_dataset('probs',data=probs)
+            hf.create_dataset('preds',data=preds)
+            hf.close()
+        print('Save saliency maps')
