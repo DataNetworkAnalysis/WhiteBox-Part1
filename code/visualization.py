@@ -3,11 +3,23 @@ import numpy as np
 import json
 
 from saliency.attribution_methods import *
-from model import SimpleCNNDeconv
+from models import SimpleCNNDeconv
 
 import matplotlib.pyplot as plt
 
 def visualize_saliencys(origin_imgs, results, probs, preds, classes, names, target, **kwargs):
+    '''
+    Visualize selectivity logs
+
+    Args:
+        origin_imgs: original images
+        results: saliency maps
+        probs: probability by class
+        preds: predict class
+        classes: target class
+        names: attribution method names
+        target: target dataset. ['mnist','cifar10']
+    '''
     # initialize
     row = kwargs['row']
     col = kwargs['col']
@@ -48,6 +60,15 @@ def visualize_saliencys(origin_imgs, results, probs, preds, classes, names, targ
 
 
 def visualize_selectivity(target, methods, steps, sample_pct, save_dir, **kwargs):
+    '''
+    Visualize selectivity logs
+
+    Args:
+        target: target dataset. ['mnist','cifar10']
+        methods: attribution methods 
+        steps: number of step
+        savedir: save path and save name
+    '''
     # initialize
     fontsize = 10 if 'fontsize' not in kwargs.keys() else kwargs['fontsize']
     size = (5,5) if 'size' not in kwargs.keys() else kwargs['size']
@@ -117,7 +138,38 @@ def visualize_selectivity(target, methods, steps, sample_pct, save_dir, **kwargs
     plt.savefig(save_dir,dpi=kwargs['dpi'])
 
 
-def visualize_ROARnKAR(targets, methods, ratio_lst, eval_method, savedir=None, **kwargs):
+def visualize_ROARnKAR(targets, ratio_lst, eval_method, methods=None, attention=None, savedir=None, **kwargs):
+    '''
+    Visualize ROAR or KAR 
+
+    Args:
+        dataset: target dataset. ['mnist','cifar10']
+        ratio_lst: pixel ratio list
+        eval_method: ['ROAR','KAR']
+        methods: attribution methods 
+        attention: attention method
+        savedir: save path and save name
+    '''
+    if methods==None:
+        assert attention!=None, 'If methods is None, attention should not be None'
+        methods = attention
+    elif attention==None:
+        assert methods!=None, 'If methods is None, attention should not be None'
+    else:
+        t_methods = methods + attention
+        methods = t_methods.copy()
+
+    # if attention is not None, define methods list
+    for i in range(len(methods)):
+        if methods[i] == 'CAM':
+            methods[i] = 'CAM_CAM'
+        elif methods[i] == 'CBAM':
+            methods[i] = 'CBAM_GC'
+        elif methods[i] == 'RAN':
+            methods[i] = 'RAN_GC'
+        elif methods[i] == 'WARN':
+            methods[i] = 'WARN_GC'
+
     # initialize
     fontsize = 10 if 'fontsize' not in kwargs.keys() else kwargs['fontsize']
     size = (5,5) if 'size' not in kwargs.keys() else kwargs['size']
@@ -131,18 +183,30 @@ def visualize_ROARnKAR(targets, methods, ratio_lst, eval_method, savedir=None, *
     for target in targets:
         test_acc[target] = {m: [] for m in methods}
 
-    # load logs
-    for target in targets:
-        f = open('../logs/simple_cnn_{}_logs.txt'.format(target), 'r')
-        acc = json.load(f)['test_result']
-        for m in methods:
+    # load test accuracy
+    for m in methods:
+        for target in targets:
+            if ('CAM' in m) or ('CBAM' in m):
+                model_name = '{}_{}_{}'.format('simple_cnn', target,m.split('_')[0])
+            elif ('RAN' in m) or ('WARN' in m):
+                model_name = '{}_{}'.format(target, m.split('_')[0])
+            else:
+                model_name = '{}_{}'.format('simple_cnn', target)
+
+            f = open('../logs/{}_logs.txt'.format(model_name),'r')
+            acc = json.load(f)['test_result']
             test_acc[target][m].append(acc)
 
-    # load accuracy
+    # load roar/kar accuracy
     for target in targets:
         for m in methods:
+            if ('RAN' in m) or ('WARN' in m):
+                model_name = '{}_{}'.format(target, m)
+            else:
+                model_name = '{}_{}_{}'.format('simple_cnn', target, m)
+
             for ratio in ratio_lst[1:]:
-                f = open('../logs/simple_cnn_{0:}_{1:}_{2:}{3:.1f}_logs.txt'.format(target, m, eval_method, ratio),'r')
+                f = open('../logs/{0:}_{1:}{2:.1f}_logs.txt'.format(model_name, eval_method, ratio),'r')
                 test_acc[target][m].append(json.load(f)['test_result'])
 
     # plotting
@@ -152,7 +216,8 @@ def visualize_ROARnKAR(targets, methods, ratio_lst, eval_method, savedir=None, *
             ax[i].plot(ratio_lst, test_acc[targets[i]][methods[j]], label=methods[j], color=color[j], marker=marker[j])
         ax[i].set_title(f'{targets[i].upper()} {eval_method} score', size=fontsize)
         ax[i].set_ylabel('Accuracy', size=fontsize)
-        ax[i].set_xlabel('# of remove ratio', size=fontsize)
+        r_k = 'remove' if eval_method=='ROAR' else 'keep'
+        ax[i].set_xlabel(f'Pixel {r_k} ratio', size=fontsize)
         ax[i].set_xlim([0,1])
         ax[i].legend(loc='upper right')
     if savedir:
@@ -160,8 +225,151 @@ def visualize_ROARnKAR(targets, methods, ratio_lst, eval_method, savedir=None, *
         plt.savefig(savedir, dpi=dpi)
 
 
+def make_saliency_map(dataset, model, methods, attr_method_lst, name_lst, **kwargs):
+    '''
+    Make sliency map
+
+    Args:
+        dataset: target dataset. ['mnist','cifar10']
+        model: model to apply attribution method
+        methods: attribution methods
+        attr_method_lst: saliency map list
+        name_lst: attribution method name list
+    
+    Return:
+
+    '''
+    if 'VBP' in methods:
+        VBP_attr = VanillaBackprop(model, **kwargs)
+        attr_method_lst.append(VBP_attr)
+        name_lst.append('Vanilla\nBackprop')
+    if 'IB' in methods:
+        IB_attr = InputBackprop(model, **kwargs)
+        attr_method_lst.append(IB_attr)
+        name_lst.append('Input\nBackprop')
+    if 'DeconvNet' in methods:
+        model_deconv = SimpleCNNDeconv(dataset)
+        deconvnet_attr = DeconvNet(model, model_deconv, **kwargs)
+        attr_method_lst.append(deconvnet_attr)
+        name_lst.append('DeconvNet')
+    if 'IG' in methods:
+        IG_attr = IntegratedGradients(model, **kwargs)
+        attr_method_lst.append(IG_attr)
+        name_lst.append('Integrated\nGradients')
+    if 'GB' in methods:
+        GB_attr = GuidedBackprop(model, **kwargs)
+        attr_method_lst.append(GB_attr)
+        name_lst.append('Guided\nBackprop')
+    if 'GC' in methods:
+        GC_attr = GradCAM(model, **kwargs)
+        attr_method_lst.append(GC_attr)
+        name_lst.append('Grad CAM')
+    if 'GBGC' in methods:
+        GBGC_attr = GuidedGradCAM(model, **kwargs)
+        attr_method_lst.append(GBGC_attr)
+        name_lst.append('Guided\nGrad CAM')
+
+    return attr_method_lst, name_lst
+
+def visualize_coherence_models(dataset, images, pre_images, targets, idx2classes, model, methods, model_names, savedir=None, **kwargs):
+    '''
+    Visualize coherence map that compare to attribution methods
+
+    Args:
+        dataset: target dataset. ['mnist','cifar10']
+        images: original images
+        pre_images: preprocessed images to evaluate
+        target: targets to predict
+        idx2classes: index and class dictionary
+        model: model to apply attribution methods
+        methods: attribution methods to extract saliency map
+        savedir: save path and save name
+
+    '''
+    # initialize
+    fontsize = 10 if 'fontsize' not in kwargs.keys() else kwargs['fontsize']
+    size = (5,5) if 'size' not in kwargs.keys() else kwargs['size']
+    random_state = 223 if 'random_state' not in kwargs.keys() else kwargs['random_state']
+    dpi = None if 'dpi' not in kwargs.keys() else kwargs['dpi']
+    wspace = 0 if 'wspace' not in kwargs.keys() else kwargs['wspace']
+    hspace = 0 if 'hspace' not in kwargs.keys() else kwargs['hspace']
+
+    params = {}
+    n = 0
+    for m in model_names:
+        for i in range(len(methods)):
+            if m == 'RAN':
+                params[n] = {'layer':3}
+            else:
+                params[n] = {}
+            n += 1
+
+    # attribution methods
+    attr_methods = []
+    name_lst = []
+    if isinstance(model, list):
+        for i, m in enumerate(model):
+            model_params = {'seq_name':'stages'} if model_names[i] == 'RAN' else {}
+            attr_methods, name_lst = make_saliency_map(dataset, m, methods, attr_methods, name_lst, **model_params)
+            name_lst[i] = name_lst[i] + f'\n{model_names[i]}'
+    
+    # initialize results
+    nb_class = 10
+    nb_methods = len(attr_methods)
+    sal_maps_lst = np.zeros((nb_methods, ) + images.shape, dtype=np.float32)
+
+    # make saliency maps
+    for m in range(nb_methods):
+        sal_maps, _, _ = attr_methods[m].generate_image(pre_images, targets, **params[m])
+        sal_maps_lst[m] = sal_maps
+
+    # plotting
+    col = nb_methods + 1 # number of attribution methods + original image
+    f, ax = plt.subplots(nb_class, col, figsize=size)
+    # original images
+    color = 'gray' if dataset == 'mnist' else None
+    for i in range(nb_class):
+        img = images[i].squeeze() if dataset == 'mnist' else images[i]
+    
+        ax[i,0].imshow(img, color)
+        ax[i,0].set_ylabel('{0:}'.format(idx2classes[i]), size=fontsize)
+        ax[i,0].set_xticks([])
+        ax[i,0].set_yticks([])
+        # set title
+        if i == 0:
+            ax[i,0].set_title('Original Image', size=fontsize)
+
+    for i in range(nb_class*(col-1)):
+        r = i//(col-1)
+        c = i%(col-1)
+        sal_map = sal_maps_lst[c,r].squeeze() if dataset == 'mnist' else sal_maps_lst[c,r]
+        ax[r,c+1].imshow(sal_map, color)
+        ax[r,c+1].axis('off')
+        # set title
+        if r == 0:
+            ax[r,c+1].set_title(name_lst[c], size=fontsize)
+
+    plt.subplots_adjust(wspace=wspace, hspace=hspace)
+    if savedir:
+        plt.tight_layout()
+        plt.savefig(savedir,dpi=dpi)
+
 
 def visualize_coherence(dataset, images, pre_images, targets, idx2classes, model, methods, savedir=None, **kwargs):
+    '''
+    Visualize coherence map that compare to attribution methods
+
+    Args:
+        dataset: target dataset. ['mnist','cifar10']
+        images: original images
+        pre_images: preprocessed images to evaluate
+        target: targets to predict
+        idx2classes: index and class dictionary
+        model: model to apply attribution methods
+        methods: attribution methods to extract saliency map
+        savedir: save path and save name
+
+    '''
     # initialize
     fontsize = 10 if 'fontsize' not in kwargs.keys() else kwargs['fontsize']
     size = (5,5) if 'size' not in kwargs.keys() else kwargs['size']
@@ -171,35 +379,8 @@ def visualize_coherence(dataset, images, pre_images, targets, idx2classes, model
     # attribution methods
     attr_methods = []
     name_lst = []
-    if 'VBP' in methods:
-        VBP_attr = VanillaBackprop(model)
-        attr_methods.append(VBP_attr)
-        name_lst.append('Vanilla\nBackprop')
-    if 'IB' in methods:
-        IB_attr = InputBackprop(model)
-        attr_methods.append(IB_attr)
-        name_lst.append('Input\nBackprop')
-    if 'DeconvNet' in methods:
-        model_deconv = SimpleCNNDeconv(dataset)
-        deconvnet_attr = DeconvNet(model, model_deconv)
-        attr_methods.append(deconvnet_attr)
-        name_lst.append('DeconvNet')
-    if 'IG' in methods:
-        IG_attr = IntegratedGradients(model)
-        attr_methods.append(IG_attr)
-        name_lst.append('Integrated\nGradients')
-    if 'GB' in methods:
-        GB_attr = GuidedBackprop(model)
-        attr_methods.append(GB_attr)
-        name_lst.append('Guided\nGradients')
-    if 'GC' in methods:
-        GC_attr = GradCAM(model)
-        attr_methods.append(GC_attr)
-        name_lst.append('Grad CAM')
-    if 'GBGC':
-        GBGC_attr = GuidedGradCAM(model)
-        attr_methods.append(GBGC_attr)
-        name_lst.append('Guided\nGrad CAM')
+    attr_methods, name_lst = make_saliency_map(dataset, model, methods, attr_methods, name_lst, **kwargs)
+    
     
     # initialize results
     nb_class = 10
@@ -249,6 +430,15 @@ def visualize_coherence(dataset, images, pre_images, targets, idx2classes, model
 
 
 def visualize_trainlogs(train, valid, title, savedir=None, **kwargs):
+    '''
+    Visualize training log
+
+    Args:
+        train: training logs
+        valid: validation logs
+        title: graph title
+        savedir: save path and save name
+    '''
     # initialize
     fontsize = 10 if 'fontsize' not in kwargs.keys() else kwargs['fontsize']
     size = (5,5) if 'size' not in kwargs.keys() else kwargs['size']
@@ -270,3 +460,39 @@ def visualize_trainlogs(train, valid, title, savedir=None, **kwargs):
         plt.tight_layout()
         plt.savefig(savedir, dpi=dpi)
 
+
+
+def visualize_models_log(log_lst, model_names, train_yn, savedir=None, **kwargs):
+    '''
+    Visualize logs of models
+
+    Args:
+        log_lst: log list of models
+        model_names: model names
+        train_yn: train or validation
+        savedir: save path and save name
+    '''
+    # initialize
+    fontsize = 10 if 'fontsize' not in kwargs.keys() else kwargs['fontsize']
+    size = (5,5) if 'size' not in kwargs.keys() else kwargs['size']
+    color = ['b', 'g', 'r', 'c', 'm', 'y', 'k', 'w'] if 'color' not in kwargs.keys() else kwargs['color']
+    marker = ['o','v','^','s','x','*','p','d'] if 'marker' not in kwargs.keys() else kwargs['marker']
+    random_state = 223 if 'random_state' not in kwargs.keys() else kwargs['random_state']
+    dpi = None if 'dpi' not in kwargs.keys() else kwargs['dpi']
+    nb_epoch = 30 if 'nb_epoch' not in kwargs.keys() else kwargs['nb_epoch']
+    
+    metrics = {'acc':'Accuracy', 'loss':'Loss'}
+    
+    f, ax = plt.subplots(1,2, figsize=size)
+
+    for i, (k, v) in enumerate(metrics.items()):
+        for j in range(len(log_lst)):
+            m_logs = log_lst[j][train_yn][0][k]
+            ax[i].plot(np.arange(nb_epoch), m_logs[:nb_epoch], label=model_names[j], color=color[j])
+        ax[i].set_title('Comparison of mode {}'.format(train_yn), size=fontsize)
+        ax[i].set_ylabel(v, size=fontsize)
+        ax[i].set_xlabel('Epochs', size=fontsize)
+        ax[i].legend()
+    if savedir:
+        plt.tight_layout()
+        plt.savefig(savedir, dpi=dpi)
