@@ -7,7 +7,7 @@ from models import SimpleCNNDeconv
 
 import matplotlib.pyplot as plt
 
-def visualize_saliencys(origin_imgs, results, probs, preds, classes, names, target, **kwargs):
+def visualize_saliencys(origin_imgs, results, probs, preds, classes, names, target, row, col, savedir=None, **kwargs):
     '''
     Visualize selectivity logs
 
@@ -19,13 +19,14 @@ def visualize_saliencys(origin_imgs, results, probs, preds, classes, names, targ
         classes: target class
         names: attribution method names
         target: target dataset. ['mnist','cifar10']
+        row : number of class
+        col : number of saliency maps
     '''
     # initialize
-    row = kwargs['row']
-    col = kwargs['col']
-    size = kwargs['size']
-    fontsize = kwargs['fontsize']
-    labelsize = kwargs['labelsize']
+    size = (col*3, row*3) if 'size' not in kwargs.keys() else kwargs['size']
+    fontsize = 10 if 'fontsize' not in kwargs.keys() else kwargs['fontsize']
+    labelsize = 10 if 'labelsize' not in kwargs.keys() else kwargs['labelsize']
+    dpi = 100 if 'dpi' not in kwargs.keys() else kwargs['dpi']
     
     if target=='mnist':
         origin_imgs= origin_imgs.squeeze()
@@ -35,7 +36,7 @@ def visualize_saliencys(origin_imgs, results, probs, preds, classes, names, targ
     else:
         color = None
             
-    f, ax = plt.subplots(row, col, figsize=size)
+    _, ax = plt.subplots(row, col, figsize=size)
     # original images
     for i in range(row):
         ax[i,0].imshow(origin_imgs[i], color)
@@ -57,6 +58,9 @@ def visualize_saliencys(origin_imgs, results, probs, preds, classes, names, targ
 
     plt.subplots_adjust(wspace=-0.5, hspace=0)
     plt.tight_layout()
+
+    if savedir:
+        plt.savefig(savedir, dpi=dpi)
 
 
 def visualize_selectivity(target, methods, steps, sample_pct, save_dir, **kwargs):
@@ -87,7 +91,7 @@ def visualize_selectivity(target, methods, steps, sample_pct, save_dir, **kwargs
         attr_method_dict[attr_method]['data'] = hf
 
     # Accuracy Change by Methods
-    f, ax = plt.subplots(1,len(methods)+1, figsize=size)
+    _, ax = plt.subplots(1,len(methods)+1, figsize=size)
     for i in range(len(methods)):
         method = methods[i]
         # results load
@@ -135,7 +139,7 @@ def visualize_selectivity(target, methods, steps, sample_pct, save_dir, **kwargs
     plt.tight_layout()
     
     # save
-    plt.savefig(save_dir,dpi=kwargs['dpi'])
+    plt.savefig(save_dir,dpi=dpi)
 
 
 def visualize_ROARnKAR(targets, ratio_lst, eval_method, methods=None, attention=None, savedir=None, **kwargs):
@@ -164,11 +168,11 @@ def visualize_ROARnKAR(targets, ratio_lst, eval_method, methods=None, attention=
         if methods[i] == 'CAM':
             methods[i] = 'CAM_CAM'
         elif methods[i] == 'CBAM':
-            methods[i] = 'CBAM_GC'
+            methods[i] = 'CBAM_CO'
         elif methods[i] == 'RAN':
-            methods[i] = 'RAN_GC'
+            methods[i] = 'RAN_CO'
         elif methods[i] == 'WARN':
-            methods[i] = 'WARN_GC'
+            methods[i] = 'WARN_CO'
 
     # initialize
     fontsize = 10 if 'fontsize' not in kwargs.keys() else kwargs['fontsize']
@@ -184,41 +188,66 @@ def visualize_ROARnKAR(targets, ratio_lst, eval_method, methods=None, attention=
         test_acc[target] = {m: [] for m in methods}
 
     # load test accuracy
-    for m in methods:
-        for target in targets:
-            if ('CAM' in m) or ('CBAM' in m):
-                model_name = '{}_{}_{}'.format('simple_cnn', target,m.split('_')[0])
-            elif ('RAN' in m) or ('WARN' in m):
-                model_name = '{}_{}'.format(target, m.split('_')[0])
-            else:
-                model_name = '{}_{}'.format('simple_cnn', target)
+    def get_test_acc(methods, targets, test_acc):
+        for m in methods:
+            for target in targets:
+                if ('CAM' in m) or ('CBAM' in m):
+                    model_name = '{}_{}_{}'.format('simple_cnn', target,m.split('_')[0])
+                elif (('RAN' in m) or ('WARN' in m)) & (m != 'RANDOM'):
+                    model_name = '{}_{}'.format(target, m.split('_')[0])
+                else:
+                    model_name = '{}_{}'.format('simple_cnn', target)
 
-            f = open('../logs/{}_logs.txt'.format(model_name),'r')
-            acc = json.load(f)['test_result']
-            test_acc[target][m].append(acc)
+                f = open('../logs/{}_logs.txt'.format(model_name),'r')
+                acc = json.load(f)['test_result']
+                test_acc[target][m].append(acc)
+        return test_acc
+
 
     # load roar/kar accuracy
-    for target in targets:
-        for m in methods:
-            if ('RAN' in m) or ('WARN' in m):
-                model_name = '{}_{}'.format(target, m)
-            else:
-                model_name = '{}_{}_{}'.format('simple_cnn', target, m)
+    def get_roar_kar_test_acc(methods, targets, test_acc):
+        for target in targets:
+            for m in methods:
+                if (('RAN' in m) or ('WARN' in m)) & (m != 'RANDOM'):
+                    model_name = '{}_{}'.format(target, m)
+                else:
+                    model_name = '{}_{}_{}'.format('simple_cnn', target, m)
 
-            for ratio in ratio_lst[1:]:
-                f = open('../logs/{0:}_{1:}{2:.1f}_logs.txt'.format(model_name, eval_method, ratio),'r')
-                test_acc[target][m].append(json.load(f)['test_result'])
+                for ratio in ratio_lst[1:-1]:
+                    f = open('../logs/{0:}_{1:}{2:.1f}_logs.txt'.format(model_name, eval_method, ratio),'r')
+                    test_acc[target][m].append(json.load(f)['test_result'])
+        return test_acc
+
+    # insert 0 
+    def get_0_test_acc(methods, targets, test_acc):
+        for target in targets:
+            for m in methods:
+                test_acc[target][m].append(0)
+        return test_acc
+
+    # ROAR or KAR
+    if eval_method=='ROAR':
+        test_acc = get_test_acc(methods, targets, test_acc)
+        test_acc = get_roar_kar_test_acc(methods, targets, test_acc)
+        test_acc = get_0_test_acc(methods, targets, test_acc)
+    elif eval_method=='KAR':
+        test_acc = get_0_test_acc(methods, targets, test_acc)
+        test_acc = get_roar_kar_test_acc(methods, targets, test_acc)
+        test_acc = get_test_acc(methods, targets, test_acc)
 
     # plotting
     f, ax = plt.subplots(1,2,figsize=size)
     for i in range(len(targets)):
         for j in range(len(methods)):
-            ax[i].plot(ratio_lst, test_acc[targets[i]][methods[j]], label=methods[j], color=color[j], marker=marker[j])
-        ax[i].set_title(f'{targets[i].upper()} {eval_method} score', size=fontsize)
-        ax[i].set_ylabel('Accuracy', size=fontsize)
-        r_k = 'remove' if eval_method=='ROAR' else 'keep'
-        ax[i].set_xlabel(f'Pixel {r_k} ratio', size=fontsize)
+            if methods[j] == 'RANDOM':
+                ax[i].plot(ratio_lst, test_acc[targets[i]][methods[j]], label=methods[j], color='black', linestyle='--', linewidth=3, alpha=0.5)
+            else:
+                ax[i].plot(ratio_lst, test_acc[targets[i]][methods[j]], label=methods[j], color=color[j], marker=marker[j])
+        ax[i].set_title(f'{eval_method} : {targets[i].upper()}', size=fontsize)
+        ax[i].set_ylabel('Test accuracy', size=fontsize)
+        ax[i].set_xlabel(f'% of input features replaced', size=fontsize)
         ax[i].set_xlim([0,1])
+        ax[i].set_ylim([0,1])
         ax[i].legend(loc='upper right')
     if savedir:
         plt.tight_layout()
@@ -239,6 +268,10 @@ def make_saliency_map(dataset, model, methods, attr_method_lst, name_lst, **kwar
     Return:
 
     '''
+    if 'CO' in methods:
+        CO_attr = ConvOutput(model, **kwargs)
+        attr_method_lst.append(CO_attr)
+        name_lst.append('ConvOUtput')
     if 'VBP' in methods:
         VBP_attr = VanillaBackprop(model, **kwargs)
         attr_method_lst.append(VBP_attr)
@@ -299,7 +332,7 @@ def visualize_coherence_models(dataset, images, pre_images, targets, idx2classes
     for m in model_names:
         for i in range(len(methods)):
             if m == 'RAN':
-                params[n] = {'layer':3}
+                params[n] = {'layer':5}
             else:
                 params[n] = {}
             n += 1
@@ -325,7 +358,7 @@ def visualize_coherence_models(dataset, images, pre_images, targets, idx2classes
 
     # plotting
     col = nb_methods + 1 # number of attribution methods + original image
-    f, ax = plt.subplots(nb_class, col, figsize=size)
+    _, ax = plt.subplots(nb_class, col, figsize=size)
     # original images
     color = 'gray' if dataset == 'mnist' else None
     for i in range(nb_class):
